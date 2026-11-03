@@ -84,7 +84,74 @@ function buyerPower(bars, p = 14) {
   });
   const out = [];
   for (let i = p; i < bars.length; i++) {
-    if (rp[i] == null) continue;
+    if (rp[i] == null) continue;const share = vs === 0 ? 50 : 100 * bs / vs;
+    out.push({ time: bars[i].time, value: (rp[i] + share) / 2 });
+  }
+  return out;
+}
+
+async function start() {
+  sym = $("sym").value.trim().toUpperCase();
+  const tf = $("tf").value;
+  tfSec = { "1Min": 60, "5Min": 300, "15Min": 900 }[tf];
+  $("name").textContent = sym; $("status").textContent = "Loading...";
+  makeChart(); cur = null; hist = [];
+
+  const r = await fetch(`/api/bars?symbol=${sym}&tf=${tf}`);
+  const j = await r.json();
+  if (!r.ok) return $("status").textContent = "Error: " + j.error;
+
+  prevClose = j.prevClose;
+  const bars = j.bars.map(b => ({ time: Math.floor(Date.parse(b.t) / 1000),
+    open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
+  candles.setData(bars.map(({ volume, ...c }) => c));
+  volume.setData(bars.map(b => ({ time: b.time, value: b.volume,
+    color: b.close >= b.open ? "#0ecb8155" : "#f6465d55" })));
+  hist = bars.map(b => ({ ...b }));
+  bp.setData(buyerPower(hist));
+  if (bars.length) { cur = { ...bars[bars.length - 1] }; setPrice(cur.close); }
+  $("status").textContent = "Live: " + sym;
+  subscribe();
+}
+
+function subscribe() {
+  if (!ws || ws.readyState > 1) {
+    ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/live");
+    ws.onopen = () => ws.send(JSON.stringify({ symbol: sym }));
+    ws.onmessage = e => { const m = JSON.parse(e.data); onTrade(m.p, m.s, Date.parse(m.t)); };
+    ws.onclose = () => setTimeout(() => sym && subscribe(), 3000);
+  } else if (ws.readyState === 1) {
+    ws.send(JSON.stringify({ symbol: sym }));
+  }
+}
+
+function onTrade(price, size, ms) {
+  const t = Math.floor(ms / 1000 / tfSec) * tfSec;
+  if (!cur || t > cur.time) cur = { time: t, open: price, high: price, low: price, close: price, volume: size };
+  else { cur.high = Math.max(cur.high, price); cur.low = Math.min(cur.low, price); cur.close = price; cur.volume += size; }
+  candles.update({ time: cur.time, open: cur.open, high: cur.high, low: cur.low, close: cur.close });
+  volume.update({ time: cur.time, value: cur.volume, color: cur.close >= cur.open ? "#0ecb8155" : "#f6465d55" });
+
+  const k = hist.length - 1;
+  if (k >= 0 && hist[k].time === cur.time) hist[k] = { ...cur }; else hist.push({ ...cur });
+  const r = buyerPower(hist);
+  if (r.length) bp.update(r[r.length - 1]);
+  setPrice(price);
+}
+
+function setPrice(p) {
+  $("price").textContent = p.toFixed(2);
+  if (prevClose) {
+    const d = p - prevClose, pct = 100 * d / prevClose;
+    $("chg").textContent = (d >= 0 ? "+" : "") + d.toFixed(2) + " (" + (d >= 0 ? "+" : "") + pct.toFixed(2) + "%)";
+    $("chg").className = d >= 0 ? "up" : "down";
+  }
+}
+
+start();
+</script>
+</body>
+</html>
     let bs = 0, vs = 0;
     for (let j = i - p + 1; j <= i; j++) { bs += buyVol[j]; vs += bars[j].volume; }
     const share = vs === 0 ? 50 : 100 * bs…
