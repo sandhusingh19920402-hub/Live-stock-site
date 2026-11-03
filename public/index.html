@@ -25,17 +25,23 @@
     <option value="5Min">5 min</option>
     <option value="15Min">15 min</option>
   </select>
+  <select id="mode" onchange="start()">
+    <option value="bp">Buyer Power</option>
+    <option value="combo">CVD-RSI Combo</option>
+    <option value="rsi">RSI</option>
+    <option value="cvd">CVD</option>
+  </select>
   <button onclick="start()">Load</button>
 </div>
 <div id="head"><span id="name">-</span><span id="price">-</span><span id="chg"></span></div>
 <small id="status"></small>
 <div id="chart"></div>
 <small>Live data via IEX (partial market volume). Live movement only 9:30-16:00 ET, weekdays. Times in UTC.<br>
-Yellow line = Buyer Power (0-100): above 50 buyers in control, above 70 very strong, below 30 very weak. Estimate only, not financial advice.</small>
+Yellow line (panel at bottom): above 50 buyers in control, above 70 very strong, below 30 very weak. CVD is estimated from candles. Not financial advice.</small>
 
 <script>
 const $ = id => document.getElementById(id);
-let chart, candles, volume, bp, ws, cur = null, tfSec = 60, prevClose = null, sym = "", hist = [];
+let chart, candles, volume, indS, ws, cur = null, tfSec = 60, prevClose = null, sym = "", hist = [];
 
 function makeChart() {
   if (chart) chart.remove();
@@ -52,39 +58,78 @@ function makeChart() {
   volume = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol" });
   chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.66, bottom: 0.2 } });
   chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.05, bottom: 0.35 } });
-  bp = chart.addLineSeries({
-    color: "#f5b942", lineWidth: 2, priceScaleId: "bp",
-    priceFormat: { type: "custom", formatter: v => v.toFixed(0) }
+  const isCvd = $("mode").value === "cvd";
+  indS = chart.addLineSeries({
+    color: "#f5b942", lineWidth: 2, priceScaleId: "ind",
+    priceFormat: { type: "custom", formatter: v => isCvd ? Math.round(v).toLocaleString() : v.toFixed(0) }
   });
-  chart.priceScale("bp").applyOptions({ scaleMargins: { top: 0.82, bottom: 0.02 } });
-  [30, 50, 70].forEach(lv => bp.createPriceLine({ price: lv, color: "#555", lineStyle: 2, lineWidth: 1, axisLabelVisible: false }));
+  chart.priceScale("ind").applyOptions({ scaleMargins: { top: 0.82, bottom: 0.02 } });
+  if (!isCvd) {
+    [30, 50, 70].forEach(lv => indS.createPriceLine({
+      price: lv, color: "#555", lineStyle: 2, lineWidth: 1, axisLabelVisible: false
+    }));
+  }
 }
 
 function rsi(v, p = 14) {
   const out = Array(v.length).fill(null);
-  let g = 0, l = 0;
+  let gain = 0, loss = 0;
   for (let i = 1; i < v.length; i++) {
     const d = v[i] - v[i - 1], up = Math.max(d, 0), dn = Math.max(-d, 0);
     if (i <= p) {
-      g += up; l += dn;
-      if (i === p) { g /= p; l /= p; out[i] = l === 0 ? 100 : 100 - 100 / (1 + g / l); }
+      gain += up; loss += dn;
+      if (i === p) {
+        gain /= p; loss /= p;
+        out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+      }
     } else {
-      g = (g * (p - 1) + up) / p; l = (l * (p - 1) + dn) / p;
-      out[i] = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+      gain = (gain * (p - 1) + up) / p;
+      loss = (loss * (p - 1) + dn) / p;
+      out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
     }
   }
   return out;
 }
 
-function buyerPower(bars, p = 14) {
-  const rp = rsi(bars.map(b => b.close), p);
-  const buyVol = bars.map(b => {
-    const r = b.high - b.low;
-    return r === 0 ? b.volume / 2 : b.volume * (b.close - b.low) / r;
+function buyVolOf(b) {
+  const r = b.high - b.low;
+  return r === 0 ? b.volume / 2 : b.volume * (b.close - b.low) / r;
+}
+
+function cvdOf(bars) {
+  let cum = 0;
+  return bars.map(b => {
+    const bv = buyVolOf(b);
+    cum += bv - (b.volume - bv);
+    return cum;
   });
+}
+
+function calc(bars, mode, p = 14) {
   const out = [];
+  if (mode === "cvd") {
+    const c = cvdOf(bars);
+    bars.forEach((b, i) => out.push({ time: b.time, value: c[i] }));
+    return out;
+  }
+  const rp = rsi(bars.map(b => b.close), p);
+  if (mode === "rsi") {
+    bars.forEach((b, i) => { if (rp[i] != null) out.push({ time: b.time, value: rp[i] }); });
+    return out;
+  }
+  if (mode === "combo") {
+    const rc = rsi(cvdOf(bars), p);
+    bars.forEach((b, i) => {
+      if (rp[i] != null && rc[i] != null) out.push({ time: b.time, value: (rp[i] + rc[i]) / 2 });
+    });
+    return out;
+  }
+  const bv = bars.map(buyVolOf);
   for (let i = p; i < bars.length; i++) {
-    if (rp[i] == null) continue;const share = vs === 0 ? 50 : 100 * bs / vs;
+    if (rp[i] == null) continue;
+    let bs = 0, vs = 0;
+    for (let j = i - p + 1; j <= i; j++) { bs += bv[j]; vs += bars[j].volume; }
+    const share = vs === 0 ? 50 : 100 * bs / vs;
     out.push({ time: bars[i].time, value: (rp[i] + share) / 2 });
   }
   return out;
@@ -94,21 +139,26 @@ async function start() {
   sym = $("sym").value.trim().toUpperCase();
   const tf = $("tf").value;
   tfSec = { "1Min": 60, "5Min": 300, "15Min": 900 }[tf];
-  $("name").textContent = sym; $("status").textContent = "Loading...";
+  $("name").textContent = sym;
+  $("status").textContent = "Loading...";
   makeChart(); cur = null; hist = [];
 
   const r = await fetch(`/api/bars?symbol=${sym}&tf=${tf}`);
   const j = await r.json();
-  if (!r.ok) return $("status").textContent = "Error: " + j.error;
+  if (!r.ok) { $("status").textContent = "Error: " + j.error; return; }
 
   prevClose = j.prevClose;
-  const bars = j.bars.map(b => ({ time: Math.floor(Date.parse(b.t) / 1000),
-    open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
-  candles.setData(bars.map(({ volume, ...c }) => c));
-  volume.setData(bars.map(b => ({ time: b.time, value: b.volume,
-    color: b.close >= b.open ? "#0ecb8155" : "#f6465d55" })));
+  const bars = j.bars.map(b => ({
+    time: Math.floor(Date.parse(b.t) / 1000),
+    open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v
+  }));
+  candles.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+  volume.setData(bars.map(b => ({
+    time: b.time, value: b.volume,
+    color: b.close >= b.open ? "#0ecb8155" : "#f6465d55"
+  })));
   hist = bars.map(b => ({ ...b }));
-  bp.setData(buyerPower(hist));
+  indS.setData(calc(hist, $("mode").value));
   if (bars.length) { cur = { ...bars[bars.length - 1] }; setPrice(cur.close); }
   $("status").textContent = "Live: " + sym;
   subscribe();
@@ -119,7 +169,7 @@ function subscribe() {
     ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/live");
     ws.onopen = () => ws.send(JSON.stringify({ symbol: sym }));
     ws.onmessage = e => { const m = JSON.parse(e.data); onTrade(m.p, m.s, Date.parse(m.t)); };
-    ws.onclose = () => setTimeout(() => sym && subscribe(), 3000);
+    ws.onclose = () => setTimeout(() => { if (sym) subscribe(); }, 3000);
   } else if (ws.readyState === 1) {
     ws.send(JSON.stringify({ symbol: sym }));
   }
@@ -127,15 +177,24 @@ function subscribe() {
 
 function onTrade(price, size, ms) {
   const t = Math.floor(ms / 1000 / tfSec) * tfSec;
-  if (!cur || t > cur.time) cur = { time: t, open: price, high: price, low: price, close: price, volume: size };
-  else { cur.high = Math.max(cur.high, price); cur.low = Math.min(cur.low, price); cur.close = price; cur.volume += size; }
+  if (!cur || t > cur.time) {
+    cur = { time: t, open: price, high: price, low: price, close: price, volume: size };
+  } else {
+    cur.high = Math.max(cur.high, price);
+    cur.low = Math.min(cur.low, price);
+    cur.close = price;
+    cur.volume += size;
+  }
   candles.update({ time: cur.time, open: cur.open, high: cur.high, low: cur.low, close: cur.close });
-  volume.update({ time: cur.time, value: cur.volume, color: cur.close >= cur.open ? "#0ecb8155" : "#f6465d55" });
+  volume.update({
+    time: cur.time, value: cur.volume,
+    color: cur.close >= cur.open ? "#0ecb8155" : "#f6465d55"
+  });
 
   const k = hist.length - 1;
   if (k >= 0 && hist[k].time === cur.time) hist[k] = { ...cur }; else hist.push({ ...cur });
-  const r = buyerPower(hist);
-  if (r.length) bp.update(r[r.length - 1]);
+  const res = calc(hist, $("mode").value);
+  if (res.length) indS.update(res[res.length - 1]);
   setPrice(price);
 }
 
@@ -143,7 +202,8 @@ function setPrice(p) {
   $("price").textContent = p.toFixed(2);
   if (prevClose) {
     const d = p - prevClose, pct = 100 * d / prevClose;
-    $("chg").textContent = (d >= 0 ? "+" : "") + d.toFixed(2) + " (" + (d >= 0 ? "+" : "") + pct.toFixed(2) + "%)";
+    const sign = d >= 0 ? "+" : "";
+    $("chg").textContent = sign + d.toFixed(2) + " (" + sign + pct.toFixed(2) + "%)";
     $("chg").className = d >= 0 ? "up" : "down";
   }
 }
@@ -152,6 +212,3 @@ start();
 </script>
 </body>
 </html>
-    let bs = 0, vs = 0;
-    for (let j = i - p + 1; j <= i; j++) { bs += buyVol[j]; vs += bars[j].volume; }
-    const share = vs === 0 ? 50 : 100 * bs…
