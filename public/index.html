@@ -24,6 +24,7 @@
     <option value="1Min">1 min</option>
     <option value="5Min">5 min</option>
     <option value="15Min">15 min</option>
+    <option value="1Day">1 day</option>
   </select>
   <select id="mode" onchange="start()">
     <option value="bp">Buyer Power</option>
@@ -138,7 +139,7 @@ function calc(bars, mode, p = 14) {
 async function start() {
   sym = $("sym").value.trim().toUpperCase();
   const tf = $("tf").value;
-  tfSec = { "1Min": 60, "5Min": 300, "15Min": 900 }[tf];
+  tfSec = { "1Min": 60, "5Min": 300, "15Min": 900, "1Day": 86400 }[tf];
   $("name").textContent = sym;
   $("status").textContent = "Loading...";
   makeChart(); cur = null; hist = [];
@@ -176,7 +177,13 @@ function subscribe() {
 }
 
 function onTrade(price, size, ms) {
-  const t = Math.floor(ms / 1000 / tfSec) * tfSec;
+  let t;
+  if (tfSec === 86400) {
+    if (!cur) return;
+    t = cur.time + Math.max(0, Math.floor((ms / 1000 - cur.time) / 86400)) * 86400;
+  } else {
+    t = Math.floor(ms / 1000 / tfSec) * tfSec;
+  }
   if (!cur || t > cur.time) {
     cur = { time: t, open: price, high: price, low: price, close: price, volume: size };
   } else {
