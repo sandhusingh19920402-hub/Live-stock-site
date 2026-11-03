@@ -14,11 +14,12 @@ app.use(express.static("public"));
 app.get("/api/bars", async (req, res) => {
   try {
     const sym = clean(req.query.symbol) || "AAPL";
-    const tf = ["1Min", "5Min", "15Min"].includes(req.query.tf) ? req.query.tf : "1Min";
-    const start = new Date(Date.now() - 6 * 86400000).toISOString();
+    const tf = ["1Min", "5Min", "15Min", "1Day"].includes(req.query.tf) ? req.query.tf : "1Min";
+    const days = tf === "1Day" ? 400 : 6;
+    const start = new Date(Date.now() - days * 86400000).toISOString();
     const base = `https://data.alpaca.markets/v2/stocks/${sym}/bars`;
     const [a, d] = await Promise.all([
-      fetch(`${base}?timeframe=${tf}&start=${start}&limit=400&sort=desc&feed=${FEED}`, { headers }),
+      fetch(`${base}?timeframe=${tf}&start=${start}&limit=1000&sort=desc&feed=${FEED}`, { headers }),
       fetch(`${base}?timeframe=1Day&start=${start}&limit=3&sort=desc&feed=${FEED}`, { headers })
     ]);
     const bars = await a.json(), daily = await d.json();
