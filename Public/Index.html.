@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Stock Chart</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  body { background:#0e1117; color:#e6e6e6; font:14px sans-serif; margin:0; padding:12px; }
+  .bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  input, select, button { background:#161b22; color:#e6e6e6; border:1px solid #333; border-radius:6px; padding:8px; font-size:14px; }
+  button { cursor:pointer; }
+  #head { display:flex; align-items:baseline; gap:12px; margin:6px 0; }
+  #name { font-size:18px; } #price { font-size:30px; font-weight:bold; }
+  .up { color:#0ecb81; } .down { color:#f6465d; }
+  #chart { width:100%; height:62vh; min-height:320px; }
+  small { color:#7d8590; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <input id="sym" value="AAPL" size="6">
+  <select id="tf">
+    <option value="1Min">1 min</option>
+    <option value="5Min">5 min</option>
+    <option value="15Min">15 min</option>
+  </select>
+  <button onclick="start()">Load</button>
+</div>
+<div id="head"><span id="name">-</span><span id="price">-</span><span id="chg"></span></div>
+<small id="status"></small>
+<div id="chart"></div>
+<small>Live data via IEX (partial market volume). Live movement only 9:30-16:00 ET, weekdays. Times in UTC.</small>
+
+<script>
+const $ = id => document.getElementById(id);
+let chart, candles, volume, ws, cur = null, tfSec = 60, prevClose = null, sym = "";
+
+function makeChart() {
+  if (chart) chart.remove();
+  chart = LightweightCharts.createChart($("chart"), {
+    layout: { background: { color: "#0e1117" }, textColor: "#9aa4b2" },
+    grid: { vertLines: { color: "#1c222b" }, horzLines: { color: "#1c222b" } },
+    timeScale: { timeVisible: true, secondsVisible: false },
+    autoSize: true
+  });
+  candles = chart.addCandlestickSeries({
+    upColor: "#0ecb81", downColor: "#f6465d",
+    wickUpColor: "#0ecb81", wickDownColor: "#f6465d", borderVisible: false
+  });
+  volume = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol" });
+  chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+}
+
+async function start() {
+  sym = $("sym").value.trim().toUpperCase();
+  const tf = $("tf").value;
+  tfSec = { "1Min": 60, "5Min": 300, "15Min": 900 }[tf];
+  $("name").textContent = sym; $("status").textContent = "Loading...";
+  makeChart(); cur = null;
+
+  const r = await fetch(`/api/bars?symbol=${sym}&tf=${tf}`);
+  const j = await r.json();
+  if (!r.ok) return $("status").textContent = "Error: " + j.error;
+
+  prevClose = j.prevClose;
+  const bars = j.bars.map(b => ({ time: Math.floor(Date.parse(b.t) / 1000),
+    open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
+  candles.setData(bars.map(({ volume, ...c }) => c));
+  volume.setData(bars.map(b => ({ time: b.time, value: b.volume,
+    color: b.close >= b.open ? "#0ecb8155" : "#f6465d55" })));
+  if (bars.length) { cur = { ...bars[bars.length - 1] }; setPrice(cur.close); }
+  $("status").textContent = "Live: " + sym;
+  subscribe();
+}
+
+function subscribe() {
+  if (!ws || ws.readyState > 1) {
+    ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/live");
+    ws.onopen = () => ws.send(JSON.stringify({ symbol: sym }));
+    ws.onmessage = e => { const m = JSON.parse(e.data); onTrade(m.p, m.s, Date.parse(m.t)); };
+    ws.onclose = () => setTimeout(() => sym && subscribe(), 3000);
+  } else if (ws.readyState === 1) {
+    ws.send(JSON.stringify({ symbol: sym }));
+  }
+}
+
+function onTrade(price, size, ms) {
+  const t = Math.floor(ms / 1000 / tfSec) * tfSec;
+  if (!cur || t > cur.time) cur = { time: t, open: price, high: price, low: price, close: price, volume: size };
+  else { cur.high = Math.max(cur.high, price); cur.low = Math.min(cur.low, price); cur.close = price; cur.volume += size; }
+  candles.update({ time: cur.time, open: cur.open, high: cur.high, low: cur.low, close: cur.close });
+  volume.update({ time: cur.time, value: cur.volume, color: cur.close >= cur.open ? "#0ecb8155" : "#f6465d55" });
+  setPrice(price);
+}
+
+function setPrice(p) {
+  $("price").textContent = p.toFixed(2);
+  if (prevClose) {
+    const d = p - prevClose;
+    $("chg").textContent = `${d >= 0 ? "+" : ""}${d.toFixed(2)} (${((d / prevClose) * 100).toFixed(2)}%)`;
+    $("chg").className = d >= 0 ? "up" : "down";
+  }
+}
+start();
+</script>
+</body>
+</html>
